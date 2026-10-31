@@ -2,271 +2,329 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <!-- Блокируем стандартный зум браузера, чтобы управлять им внутри приложения -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Кинотеатр Москва - Кемерово</title>
-    <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
     <style>
-        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #000; }
-        canvas { display: block; width: 100%; height: 100%; }
-        
-        #ui-layer {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            pointer-events: none; font-family: 'Courier New', Courier, monospace;
+        * { box-sizing: border-box; }
+        body, html { 
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            overflow: hidden; background-color: #000; 
+            font-family: 'Courier New', Courier, monospace;
+            touch-action: none; /* Отключаем системные жесты, чтобы не было конфликтов */
         }
-        #floor-switcher { position: absolute; top: 15px; right: 15px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
-        .btn { background: rgba(0, 0, 0, 0.7); color: white; border: 2px solid #fff; padding: 10px 15px; font-size: 16px; font-weight: bold; cursor: pointer; border-radius: 5px; transition: 0.2s; text-transform: uppercase; }
+        
+        /* Главный контейнер экрана */
+        #viewport { width: 100%; height: 100%; position: relative; }
+        
+        /* Контейнер самой карты (фона и объектов) */
+        #map-wrapper { 
+            position: absolute; transform-origin: 0 0; 
+            width: 2528px; height: 1684px; 
+            will-change: transform; 
+        }
+        
+        #bg-image { width: 100%; height: 100%; display: block; pointer-events: none; }
+
+        /* Стили для объектов на карте */
+        .marker { 
+            position: absolute; cursor: pointer; 
+            transform: translate(-50%, -100%); /* Центрируем низ картинки по координатам */
+        }
+        .marker img { width: 100%; display: block; pointer-events: none; }
+        
+        /* Всплывающее облачко с текстом */
+        .marker-bubble {
+            position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+            margin-bottom: 15px; background: rgba(0,0,0,0.85); color: #fff; 
+            padding: 8px 12px; border-radius: 5px; border: 1px solid #fff; 
+            font-size: 14px; white-space: nowrap; pointer-events: none; 
+            opacity: 0; transition: opacity 0.3s, margin-bottom 0.3s; z-index: 100;
+        }
+        .marker-bubble.active { opacity: 1; margin-bottom: 25px; /* Эффект подпрыгивания */ }
+
+        /* Интерфейс поверх карты */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .ui-element { pointer-events: auto; }
+        
+        #floor-switcher { position: absolute; top: 15px; right: 15px; display: flex; flex-direction: column; gap: 10px; }
+        #zoom-controls { position: absolute; bottom: 20px; right: 15px; display: flex; flex-direction: column; gap: 10px; }
+        
+        .btn { 
+            background: rgba(0, 0, 0, 0.7); color: white; border: 2px solid #fff; 
+            padding: 12px 15px; font-size: 16px; font-weight: bold; cursor: pointer; 
+            border-radius: 5px; transition: 0.2s; text-transform: uppercase; font-family: inherit;
+        }
         .btn:hover { background: #555; }
         .btn.active { background: #e74c3c; border-color: #e74c3c; }
-        #coords-display { position: absolute; bottom: 20px; left: 20px; background: rgba(0, 0, 0, 0.8); color: #00ff00; padding: 10px; font-size: 16px; border-radius: 5px; pointer-events: none; display: none; border: 1px solid #00ff00; }
+        .zoom-btn { font-size: 24px; padding: 10px 18px; line-height: 1; }
+
+        #coords-display { 
+            position: absolute; bottom: 20px; left: 20px; 
+            background: rgba(0, 0, 0, 0.8); color: #00ff00; 
+            padding: 10px; font-size: 16px; border-radius: 5px; 
+            pointer-events: none; display: none; border: 1px solid #00ff00; 
+        }
     </style>
 </head>
 <body>
 
-    <div id="ui-layer">
-        <div id="floor-switcher">
-            <button class="btn active" onclick="switchFloor(1)">1 Этаж</button>
-            <button class="btn" onclick="switchFloor(2)">2 Этаж</button>
+    <div id="viewport">
+        <!-- Карта и объекты -->
+        <div id="map-wrapper">
+            <img id="bg-image" src="assets/bg_2.jpg" alt="Карта этажа">
+            <div id="markers-container"></div>
         </div>
-        <div id="coords-display"></div>
+
+        <!-- Интерфейс -->
+        <div id="ui-layer">
+            <div id="floor-switcher" class="ui-element">
+                <button class="btn active" onclick="switchFloor(1)">1 Этаж</button>
+                <button class="btn" onclick="switchFloor(2)">2 Этаж</button>
+            </div>
+            
+            <!-- Добавлены кнопки зума для мобильных -->
+            <div id="zoom-controls" class="ui-element">
+                <button class="btn zoom-btn" onclick="zoomInOut(0.2)">+</button>
+                <button class="btn zoom-btn" onclick="zoomInOut(-0.2)">-</button>
+            </div>
+
+            <div id="coords-display"></div>
+        </div>
     </div>
 
     <script>
-        // ИЗМЕНЕНО: Добавлено свойство floor для каждого объекта
-        const charactersData = [
-            // ПЕРВЫЙ ЭТАЖ (замените картинки на свои)
-            { floor: 1, x: 1000, y: 800, image: 'person1_f1.png', scale: 0.1, text: "Где тут гардероб?" },
-            
-            // ВТОРОЙ ЭТАЖ (ваши текущие)
-            { floor: 2, x: 1200, y: 955, image: '5.jpg', scale: 0.1, text: "Я потерял билет! Где мой ряд?" }, 
-            { floor: 2, x: 1400, y: 600, image: 'person2.png', scale: 0.1, text: "Тсс! Спектакль уже начался." }
-        ];
-
-        const itemsData = [
+        // ==========================================
+        // БАЗА ДАННЫХ ОБЪЕКТОВ
+        // Теперь размер задается параметром width (в пикселях)
+        // ==========================================
+        const elementsData = [
             // ПЕРВЫЙ ЭТАЖ
-            { floor: 1, x: 1500, y: 900, image: 'kassa.png', scale: 0.2, text: "Касса. Билетов нет." },
+            { floor: 1, x: 1000, y: 800, image: 'assets/person1_f1.png', width: 60, text: "Где тут гардероб?" },
+            { floor: 1, x: 1500, y: 900, image: 'assets/kassa.png', width: 120, text: "Касса. Билетов нет." },
             
             // ВТОРОЙ ЭТАЖ
-            { floor: 2, x: 800, y: 1100, image: 'proektor.png', scale: 0.2, text: "Старый кинопроектор 1937 года." },
-            { floor: 2, x: 1000, y: 700, frames: ['assets/pers/man_1.png', 'assets/pers/man_2.png', 'assets/pers/man_3.png', 'assets/pers/man_2.png'], frameRate: 4, scale: 0.1, text: "Здесь играли в шахматы." }
+            { floor: 2, x: 1200, y: 955, image: 'assets/5.jpg', width: 60, text: "Я потерял билет! Где мой ряд?" }, 
+            { floor: 2, x: 1400, y: 600, image: 'assets/person2.png', width: 60, text: "Тсс! Спектакль уже начался." },
+            { floor: 2, x: 800, y: 1100, image: 'assets/proektor.png', width: 100, text: "Старый кинопроектор 1937 года." },
+            { floor: 2, x: 1000, y: 700, width: 80, text: "Здесь играли в шахматы.", 
+              frames: ['assets/pers/man_1.png', 'assets/pers/man_2.png', 'assets/pers/man_3.png', 'assets/pers/man_2.png'] }
         ];
 
-        let bg; 
-        // ДОБАВЛЕНО: Массивы для хранения объектов сцены по этажам
-        let floor1Elements = [];
-        let floor2Elements = [];
+        // ==========================================
+        // ПЕРЕМЕННЫЕ
+        // ==========================================
+        const viewport = document.getElementById('viewport');
+        const mapWrapper = document.getElementById('map-wrapper');
+        const bgImage = document.getElementById('bg-image');
+        const markersContainer = document.getElementById('markers-container');
+        
+        const mapWidth = 2528;
+        const mapHeight = 1684;
+        
+        let currentFloor = 1;
+        let animationIntervals = []; // Для хранения таймеров анимации
 
-        const config = {
-            type: Phaser.AUTO,
-            scale: {
-                mode: Phaser.Scale.ENVELOP,
-                autoCenter: Phaser.Scale.CENTER_BOTH,
-                width: 2528,  
-                height: 1684  
-            },
-            scene: { preload: preload, create: create }
-        };
+        // Начальные настройки зума и позиции
+        let scale = Math.max(window.innerWidth / mapWidth, window.innerHeight / mapHeight);
+        let posX = (window.innerWidth - mapWidth * scale) / 2;
+        let posY = (window.innerHeight - mapHeight * scale) / 2;
 
-        const game = new Phaser.Game(config);
-
-        function preload() {
-            this.load.image('background', 'assets/bg_1.jpg'); 
-            this.load.image('background2', 'assets/bg_2.jpg'); 
-            
-            charactersData.forEach((char, index) => { 
-                this.load.image(`char_${index}`, char.image); 
-            });
-            
-            itemsData.forEach((item, index) => {
-                if (item.frames) {
-                    item.frames.forEach((frameName, frameIndex) => {
-                        this.load.image(`item_${index}_frame${frameIndex}`, frameName);
-                    });
-                } else { 
-                    this.load.image(`item_${index}`, item.image); 
-                }
-            });
+        function updateMapTransform() {
+            mapWrapper.style.transform = `translate(${posX}px, ${posY}px) scale(${scale})`;
         }
 
-        function create() {
-            const cam = this.cameras.main;
-            
-            bg = this.add.image(0, 0, 'background').setOrigin(0.5);
-            
-            const scaleX = cam.width / bg.width;
-            const scaleY = cam.height / bg.height;
-            let initialZoom = Math.max(scaleX, scaleY);
-            
-            cam.setZoom(initialZoom);
-            cam.centerOn(0, 0);
-            cam.setBounds(-bg.width / 2, -bg.height / 2, bg.width, bg.height);
-
-            this.scale.on('resize', () => { cam.centerOn(0, 0); });
-
-            const bgOffsetX = -bg.width / 2;
-            const bgOffsetY = -bg.height / 2;
-
-            let activeText = null; 
-            const showText = (text, x, y) => {
-                if (activeText) activeText.destroy();
-                const worldText = this.add.text(x, y - 85, text, {
-                    fontFamily: 'Courier New', fontSize: '14px', color: '#ffffff',
-                    backgroundColor: 'rgba(0,0,0,0.8)', padding: { x: 10, y: 5 }, align: 'center', wordWrap: { width: 150 }
-                }).setOrigin(0.5, 1).setDepth(20); 
-                
-                activeText = worldText;
-                this.time.delayedCall(3000, () => {
-                    if (worldText.active) {
-                        worldText.destroy();
-                        if (activeText === worldText) activeText = null;
-                    }
-                });
-            };
-
-            // СОЗДАНИЕ ПЕРСОНАЖЕЙ
-            charactersData.forEach((data, index) => {
-                const realX = data.x + bgOffsetX;
-                const realY = data.y + bgOffsetY;
-
-                const char = this.add.sprite(realX, realY, `char_${index}`).setOrigin(0.5, 1);
-                char.setScale(data.scale || 0.1).setDepth(10).setInteractive({ useHandCursor: true });
-                
-                char.on('pointerdown', () => {
-                    showText(data.text, realX, realY);
-                });
-
-                this.tweens.add({
-                    targets: char, y: realY - 6, duration: 400, hold: 400, yoyo: true, repeat: -1, repeatDelay: 400, ease: 'Stepped', easeParams: [1]
-                });
-
-                // ИЗМЕНЕНО: Добавляем персонажа в список нужного этажа
-                if (data.floor === 1) floor1Elements.push(char);
-                if (data.floor === 2) floor2Elements.push(char);
-            });
-
-            // СОЗДАНИЕ ПРЕДМЕТОВ
-            itemsData.forEach((item, index) => {
-                const realX = item.x + bgOffsetX;
-                const realY = item.y + bgOffsetY;
-                let itemSprite;
-
-                if (item.frames) {
-                    const firstFrameKey = `item_${index}_frame0`;
-                    if (this.textures.exists(firstFrameKey)) {
-                        itemSprite = this.add.sprite(realX, realY, firstFrameKey).setOrigin(0.5, 1);
-                        const animKey = `item_anim_${index}`; 
-                        let framesList = [];
-                        item.frames.forEach((frameName, frameIndex) => {
-                            if (this.textures.exists(`item_${index}_frame${frameIndex}`)) {
-                                framesList.push({ key: `item_${index}_frame${frameIndex}` });
-                            }
-                        });
-                        
-                        if (framesList.length > 0 && !this.anims.exists(animKey)) {
-                            this.anims.create({ key: animKey, frames: framesList, frameRate: item.frameRate || 8, repeat: -1 });
-                            itemSprite.play(animKey);
-                        }
-                    } else {
-                        itemSprite = this.add.rectangle(realX, realY, 32, 32, 0xff0000).setOrigin(0.5, 1);
-                    }
-                } else {
-                    if (this.textures.exists(`item_${index}`)) {
-                        itemSprite = this.add.image(realX, realY, `item_${index}`).setOrigin(0.5, 1);
-                    } else {
-                        itemSprite = this.add.rectangle(realX, realY, 32, 32, 0xff0000).setOrigin(0.5, 1);
-                    }
-                }
-
-                itemSprite.setDepth(10).setScale(item.scale || 0.2); 
-                itemSprite.setInteractive({ useHandCursor: true });
-                itemSprite.on('pointerdown', () => {
-                    showText(item.text, realX, realY);
-                });
-
-                // ИЗМЕНЕНО: Добавляем предмет в список нужного этажа
-                if (item.floor === 1) floor1Elements.push(itemSprite);
-                if (item.floor === 2) floor2Elements.push(itemSprite);
-            });
-
-            // НАВИГАЦИЯ (без изменений)
-            let isDown = false;
-            let startX = 0, startY = 0;
-            let camStartX = 0, camStartY = 0;
-            let lastClickTime = 0;
-
-            this.input.topOnly = false;
-
-            this.input.on('pointerdown', (pointer) => {
-                isDown = true;
-                startX = pointer.x;
-                startY = pointer.y;
-                camStartX = cam.scrollX;
-                camStartY = cam.scrollY;
-            });
-
-            this.input.on('pointermove', (pointer) => {
-                if (!isDown || !pointer.isDown) return;
-                const diffX = pointer.x - startX;
-                const diffY = pointer.y - startY;
-                cam.scrollX = camStartX - (diffX / cam.zoom);
-                cam.scrollY = camStartY - (diffY / cam.zoom);
-            });
-
-            this.input.on('pointerup', (pointer) => {
-                isDown = false;
-                const distance = Phaser.Math.Distance.Between(startX, startY, pointer.x, pointer.y);
-
-                if (distance < 10) {
-                    const worldPoint = cam.getWorldPoint(pointer.x, pointer.y);
-                    const finalX = Math.round(worldPoint.x - bgOffsetX);
-                    const finalY = Math.round(worldPoint.y - bgOffsetY);
-                    
-                    const display = document.getElementById('coords-display');
-                    display.innerText = `X: ${finalX}, Y: ${finalY}`;
-                    display.style.display = 'block';
-
-                    const currentTime = new Date().getTime();
-                    if (currentTime - lastClickTime < 350) {
-                        const targetZoom = cam.zoom > initialZoom + 0.1 ? initialZoom : initialZoom * 2.5;
-                        this.tweens.add({ 
-                            targets: cam, zoom: targetZoom, duration: 250, ease: 'Power1'
-                        });
-                    }
-                    lastClickTime = currentTime;
-                }
-            });
-
-            this.input.on('wheel', function (pointer, gameObjects, deltaX, deltaY, deltaZ) {
-                let newZoom = cam.zoom - deltaY * 0.002;
-                cam.zoom = Phaser.Math.Clamp(newZoom, initialZoom, 3);
-            });
-
-            // ИЗМЕНЕНО: При старте игры сразу прячем элементы 2 этажа
-            // Это запустит логику скрытия/показа прямо при загрузке
-            switchFloor(1);
-        }
-
-        // ИЗМЕНЕНО: Теперь функция включает и отключает видимость элементов
+        // ==========================================
+        // ЛОГИКА ЭТАЖЕЙ И ОТРИСОВКИ
+        // ==========================================
         function switchFloor(floor) {
-            document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
-            document.querySelector(`.btn:nth-child(${floor})`).classList.add('active');
+            currentFloor = floor;
             
-            if (bg) {
-                if (floor === 1) {
-                    bg.setTexture('background');
-                } else if (floor === 2) {
-                    bg.setTexture('background2');
-                }
-            }
+            // Меняем кнопки
+            document.querySelectorAll('#floor-switcher .btn').forEach(b => b.classList.remove('active'));
+            document.querySelector(`#floor-switcher .btn:nth-child(${floor})`).classList.add('active');
+            
+            // Меняем фон
+            bgImage.src = floor === 1 ? 'assets/bg_1.jpg' : 'assets/bg_2.jpg';
+            
+            renderMarkers();
+        }
 
-            // Показываем элементы выбранного этажа и скрываем остальные
-            floor1Elements.forEach(el => {
-                if (el) el.setVisible(floor === 1);
-            });
-            
-            floor2Elements.forEach(el => {
-                if (el) el.setVisible(floor === 2);
+        function renderMarkers() {
+            // Очищаем старые объекты и таймеры анимаций
+            markersContainer.innerHTML = '';
+            animationIntervals.forEach(clearInterval);
+            animationIntervals = [];
+
+            // Фильтруем объекты для текущего этажа
+            const currentElements = elementsData.filter(el => el.floor === currentFloor);
+
+            currentElements.forEach(data => {
+                const elDiv = document.createElement('div');
+                elDiv.className = 'marker ui-element'; // ui-element разрешает клик
+                elDiv.style.left = data.x + 'px';
+                elDiv.style.top = data.y + 'px';
+                elDiv.style.width = (data.width || 60) + 'px';
+
+                const img = document.createElement('img');
+                
+                // Если это анимация (массив frames)
+                if (data.frames) {
+                    img.src = data.frames[0];
+                    let frameIdx = 0;
+                    const interval = setInterval(() => {
+                        frameIdx = (frameIdx + 1) % data.frames.length;
+                        img.src = data.frames[frameIdx];
+                    }, 250); // Скорость анимации: смена кадра каждые 250 мс
+                    animationIntervals.push(interval);
+                } else {
+                    // Обычная картинка
+                    img.src = data.image;
+                }
+                
+                // Создаем текстовый пузырь
+                const bubble = document.createElement('div');
+                bubble.className = 'marker-bubble';
+                bubble.innerText = data.text;
+
+                elDiv.appendChild(img);
+                elDiv.appendChild(bubble);
+                markersContainer.appendChild(elDiv);
+
+                // Клик по объекту (показ текста)
+                elDiv.addEventListener('pointerdown', (e) => {
+                    e.stopPropagation(); // Не даем карте "захватить" клик
+                    
+                    // Скрываем все остальные тексты
+                    document.querySelectorAll('.marker-bubble.active').forEach(b => b.classList.remove('active'));
+                    
+                    bubble.classList.add('active');
+                    
+                    // Скрываем текст через 3 секунды
+                    if (elDiv.hideTimeout) clearTimeout(elDiv.hideTimeout);
+                    elDiv.hideTimeout = setTimeout(() => {
+                        bubble.classList.remove('active');
+                    }, 3000);
+                });
             });
         }
+
+        // ==========================================
+        // ЛОГИКА КАМЕРЫ (ПЕРЕМЕЩЕНИЕ И ЗУМ)
+        // ==========================================
+        let isDragging = false;
+        let startClientX, startClientY;
+        let startPosX, startPosY;
+        let dragDistance = 0;
+
+        viewport.addEventListener('pointerdown', (e) => {
+            if (e.target.closest('.ui-element')) return; // Не таскаем карту, если нажали на кнопку или персонажа
+            isDragging = true;
+            dragDistance = 0;
+            startClientX = e.clientX;
+            startClientY = e.clientY;
+            startPosX = posX;
+            startPosY = posY;
+        });
+
+        window.addEventListener('pointermove', (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startClientX;
+            const dy = e.clientY - startClientY;
+            dragDistance += Math.abs(dx) + Math.abs(dy); // Считаем, как сильно сдвинули палец
+            
+            posX = startPosX + dx;
+            posY = startPosY + dy;
+            startClientX = e.clientX;
+            startClientY = e.clientY;
+            startPosX = posX;
+            startPosY = posY;
+            
+            updateMapTransform();
+        });
+
+        window.addEventListener('pointerup', (e) => {
+            if (!isDragging) return;
+            isDragging = false;
+
+            // Если палец сдвинулся совсем чуть-чуть, считаем это кликом (для координат)
+            if (dragDistance < 10 && !e.target.closest('.marker')) {
+                const rect = mapWrapper.getBoundingClientRect();
+                const clickX = Math.round((e.clientX - rect.left) / scale);
+                const clickY = Math.round((e.clientY - rect.top) / scale);
+                
+                const coordDisplay = document.getElementById('coords-display');
+                coordDisplay.innerText = `X: ${clickX}, Y: ${clickY}`;
+                coordDisplay.style.display = 'block';
+            }
+        });
+
+        // Функция масштабирования
+        function setZoom(newScale, originX = window.innerWidth / 2, originY = window.innerHeight / 2) {
+            const oldScale = scale;
+            scale = Math.max(0.2, Math.min(newScale, 3)); // Лимиты приближения
+
+            // Сдвигаем карту так, чтобы зум был направлен в нужную точку (в центр экрана или курсор)
+            const mapX = (originX - posX) / oldScale;
+            const mapY = (originY - posY) / oldScale;
+
+            posX = originX - (mapX * scale);
+            posY = originY - (mapY * scale);
+
+            updateMapTransform();
+        }
+
+        // Кнопки +/-
+        function zoomInOut(amount) {
+            setZoom(scale + amount);
+        }
+
+        // Колесико мыши
+        viewport.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoomDelta = e.deltaY > 0 ? 0.9 : 1.1; // 10% за прокрутку
+            setZoom(scale * zoomDelta, e.clientX, e.clientY);
+        }, { passive: false });
+
+        // Pinch-to-zoom (Зум двумя пальцами на телефоне)
+        let initialPinchDist = null;
+        let initialPinchScale = null;
+        let pinchCenterX, pinchCenterY;
+
+        viewport.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 2) {
+                isDragging = false;
+                initialPinchDist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                initialPinchScale = scale;
+                pinchCenterX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                pinchCenterY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            }
+        }, { passive: false });
+
+        viewport.addEventListener('touchmove', (e) => {
+            if (e.touches.length === 2 && initialPinchDist) {
+                e.preventDefault(); 
+                const currentDist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                const newScale = initialPinchScale * (currentDist / initialPinchDist);
+                setZoom(newScale, pinchCenterX, pinchCenterY);
+            }
+        }, { passive: false });
+
+        viewport.addEventListener('touchend', (e) => {
+            if (e.touches.length < 2) {
+                initialPinchDist = null;
+            }
+        });
+
+        // Запуск (отрисовка первого этажа при загрузке)
+        updateMapTransform();
+        switchFloor(1);
     </script>
 </body>
 </html>
